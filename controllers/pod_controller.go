@@ -18,8 +18,8 @@ package controllers
 
 import (
 	"context"
-
 	"github.com/go-logr/logr"
+	"golang.org/x/exp/slices"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,8 +37,7 @@ type PodReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;update;patch
 
 const (
-	addPodNameLabelAnnotation = "padok.fr/add-pod-name-label"
-	podNameLabel              = "padok.fr/pod-name"
+	podTopologyLabel = "topology.kubernetes.io/zone"
 )
 
 // Reconcile handles a reconciliation request for a Pod.
@@ -64,36 +63,57 @@ func (r *PodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	/*
-	   Step 1: Add or remove the label.
-	*/
+	// Logic is as followed:
+	// 1. pod state change
+	// 2. Find node
+	// 3. if pod is being deleted there should be no node
+	// 4. do node ops
+	// update labels
 
-	labelShouldBePresent := pod.Annotations[addPodNameLabelAnnotation] == "true"
-	labelIsPresent := pod.Labels[podNameLabel] == pod.Name
+	node := &corev1.NodeList{}
+	if err := r.List(ctx, node); err != nil {
+		log.Error(err, "unable to list nodes")
+		return ctrl.Result{}, err
+	}
 
-	if labelShouldBePresent == labelIsPresent {
-		// The desired state and actual state of the Pod are the same.
-		// No further action is required by the operator at this moment.
-		log.Info("no update required")
+	if pod.Spec.NodeName == "" {
+		log.Info("Pod being deleted, we don't care about this")
 		return ctrl.Result{}, nil
 	}
 
-	if labelShouldBePresent {
-		// If the label should be set but is not, set it.
-		if pod.Labels == nil {
-			pod.Labels = make(map[string]string)
-		}
-		pod.Labels[podNameLabel] = pod.Name
-		log.Info("adding label")
-	} else {
-		// If the label should not be set but is, remove it.
-		delete(pod.Labels, podNameLabel)
-		log.Info("removing label")
-	}
+	// Find the node in the list
+	idx := slices.IndexFunc(node.Items, func(n corev1.Node) bool { return n.Name == pod.Spec.NodeName })
 
-	/*
-	   Step 2: Update the Pod in the Kubernetes API.
-	*/
+	// First: check if the topology label exists
+	topologyLabelExists := node.Items[idx].Labels[podTopologyLabel] != ""
+	if topologyLabelExists {
+
+		// Fetch the topology label from the node
+		nodeLabel := node.Items[idx].Labels[podTopologyLabel]
+
+		// Does the label exist on the pod?
+		labelIsNotPresent := pod.Labels[podTopologyLabel] == ""
+
+		// if the label does not exist or if the label doesn't match the pod label
+		if labelIsNotPresent || pod.Labels[podTopologyLabel] != nodeLabel {
+
+			if pod.Labels == nil {
+				pod.Labels = make(map[string]string)
+			}
+
+			pod.Labels[podTopologyLabel] = nodeLabel
+			log.Info("adding label")
+
+		} else {
+			// The desired state and actual state of the Pod are the same.
+			// No further action is required by the operator at this moment.
+			log.Info("no update required")
+			return ctrl.Result{}, nil
+		}
+	} else {
+		log.Info("Topology label does not exist on Node object, skipping.")
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.Update(ctx, &pod); err != nil {
 		if apierrors.IsConflict(err) {

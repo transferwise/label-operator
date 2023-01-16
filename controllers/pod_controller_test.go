@@ -102,15 +102,9 @@ func createPod(ctx context.Context, name string, withAnnotation, withLabel bool)
 		},
 	}
 
-	if withAnnotation {
-		pod.Annotations = map[string]string{
-			addPodNameLabelAnnotation: "true",
-		}
-	}
-
 	if withLabel {
 		pod.Labels = map[string]string{
-			podNameLabel: name,
+			podTopologyLabel: name,
 		}
 	}
 
@@ -137,10 +131,10 @@ func validatePod(ctx context.Context, name string, shouldHaveLabel bool) {
 		}
 
 		if shouldHaveLabel {
-			return (createdPod.Labels[podNameLabel] == name) == shouldHaveLabel
+			return (createdPod.Labels[podTopologyLabel] == name) == shouldHaveLabel
 		}
 
-		_, hasLabel := createdPod.Labels[podNameLabel]
+		_, hasLabel := createdPod.Labels[podTopologyLabel]
 		return !hasLabel
 	}
 
